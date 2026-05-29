@@ -66,6 +66,20 @@ class Dataset(BaseDataset):
         "debug": [False],
     }
 
+    # Only dataset_name decides what aeon downloads; the other knobs
+    # affect the in-memory split, not the file on disk.
+    prepare_cache_ignore = ("prediction_length", "n_windows", "debug")
+
+    def prepare(self):
+        """Warm aeon's local cache for this dataset (download if missing).
+
+        aeon writes the ``.tsf`` to
+        ``~/.aeon/datasets/local_data/<name>/<name>.tsf`` on first use;
+        we call it once and discard the parsed result so the cache layer
+        in :func:`load_forecasting` handles the actual download.
+        """
+        load_forecasting(self.dataset_name, return_metadata=False)
+
     def get_data(self):
 
         df, meta = load_forecasting(self.dataset_name, return_metadata=True)

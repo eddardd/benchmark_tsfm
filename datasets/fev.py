@@ -20,8 +20,11 @@ Each parquet row is one series; columns vary:
     its own column (``HUFL``, ..., ``OT``). Channel columns are stacked
     on the last axis to form ``(T, C)``.
 
-Rolling-window splits and GIFT-Eval-style term → prediction_length
-resolution match :mod:`datasets.gifteval`.
+Rolling-window splits match :mod:`datasets.monash`. The default
+``prediction_length`` is the freq-based heuristic from
+:func:`benchmark_utils.constants.from_pandas`; FEV does not publish a
+per-dataset horizon spec, so we don't try to mirror one. Pass
+``prediction_length=N`` explicitly to override.
 """
 
 import numpy as np
@@ -29,10 +32,7 @@ import pandas as pd
 from benchopt import BaseDataset
 
 from benchmark_utils.covariates import Covariates
-from benchmark_utils.constants import (
-    from_pandas,
-    gift_eval_prediction_length,
-)
+from benchmark_utils.constants import from_pandas
 from benchmark_utils.windowing import make_forecasting_splits
 
 
@@ -88,8 +88,6 @@ FEV_DATASETS: tuple[str, ...] = (
     "world_co2_emissions", "world_life_expectancy", "world_tourism",
 )
 
-FEV_TERMS: tuple[str, ...] = ("short", "medium", "long")
-
 
 def _infer_freq(timestamps) -> str:
     """Best-effort freq inference from a series' timestamp column.
@@ -114,11 +112,12 @@ class Dataset(BaseDataset):
         ``"ETT/1H"`` / ``"LOOP_SEATTLE/5T"``; flat paths like
         ``"australian_tourism"`` / ``"hospital"``. See ``FEV_DATASETS``
         for the full list (also discoverable via ``benchopt info -v``).
-    term : str
-        GIFT-Eval-style term: ``"short"`` / ``"medium"`` / ``"long"``.
-        Ignored when ``prediction_length`` is set.
     prediction_length : int or None
-        Explicit override. ``None`` → resolved from (inferred freq, term).
+        Explicit override. ``None`` → resolved from the inferred freq
+        via :func:`benchmark_utils.constants.from_pandas` (same heuristic
+        used by Monash). FEV does not publish its own per-dataset
+        horizon matrix, so we don't try to align with a leaderboard
+        spec here.
     n_windows : int
         Number of rolling evaluation windows per series.
     max_series : int or None
@@ -133,46 +132,55 @@ class Dataset(BaseDataset):
 
     parameters = {
         "dataset_name": ["LOOP_SEATTLE/1H"],
-        "term": ["short"],
         "prediction_length": [None],
         "n_windows": [1],
         "max_series": [None],
         "debug": [False],
     }
 
+    # Cache prepare() by dataset_name only — the other knobs shape the
+    # in-memory view, not the downloaded files.
+    prepare_cache_ignore = (
+        "prediction_length", "n_windows", "max_series", "debug",
+    )
+
     @classmethod
     def get_all_parameter_values(cls, name):
         if name == "dataset_name":
             return list(FEV_DATASETS)
-        if name == "term":
-            return list(FEV_TERMS)
         return None
 
-    def get_data(self):
-        from huggingface_hub import hf_hub_download, list_repo_files
+    def prepare(self):
+        """Pre-download parquet shards for this config into HF's cache."""
+        self._snapshot()
 
-        repo = "autogluon/fev_datasets"
-        files = list_repo_files(repo, repo_type="dataset")
+    def _snapshot(self) -> "list[str]":
+        """Snapshot-download parquet files for this dataset_name and
+        return their local paths. Idempotent."""
+        from huggingface_hub import snapshot_download
+        from pathlib import Path
 
-        # Match parquet files in the exact directory (no nested descent).
-        prefix = f"{self.dataset_name}/"
-        parquet_files = sorted(
-            f for f in files
-            if f.startswith(prefix)
-            and f.endswith(".parquet")
-            and "/" not in f[len(prefix):]
+        local_root = snapshot_download(
+            "autogluon/fev_datasets",
+            repo_type="dataset",
+            allow_patterns=f"{self.dataset_name}/*.parquet",
         )
+        return sorted(
+            str(p) for p in (Path(local_root) / self.dataset_name).glob("*.parquet")
+        )
+
+    def get_data(self):
+        parquet_files = self._snapshot()
         if not parquet_files:
             raise ValueError(
-                f"No parquet found at {self.dataset_name!r} in {repo}. "
-                f"Valid choices are in FEV_DATASETS."
+                f"No parquet found at {self.dataset_name!r} in "
+                "autogluon/fev_datasets. Valid choices are in FEV_DATASETS."
             )
 
-        frames = [
-            pd.read_parquet(hf_hub_download(repo, filename=f, repo_type="dataset"))
-            for f in parquet_files
-        ]
-        df = pd.concat(frames, ignore_index=True)
+        df = pd.concat(
+            [pd.read_parquet(f) for f in parquet_files],
+            ignore_index=True,
+        )
 
         if self.debug:
             df = df.head(5)
@@ -209,11 +217,11 @@ class Dataset(BaseDataset):
         # whole config (FEV groups by freq at the directory level for
         # nested configs, and flat configs are single-freq).
         inferred_freq = _infer_freq(df.iloc[0]["timestamp"])
-        canonical_freq, seasonality, _ = from_pandas(inferred_freq)
+        canonical_freq, seasonality, default_h = from_pandas(inferred_freq)
 
         pred_len = self.prediction_length
         if pred_len is None:
-            pred_len = gift_eval_prediction_length(inferred_freq, self.term)
+            pred_len = int(default_h)
 
         # Build (T, C) series. Each row's per-channel array has the same
         # length (T_i); stack on the last axis.
