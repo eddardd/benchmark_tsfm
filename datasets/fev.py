@@ -27,6 +27,8 @@ per-dataset horizon spec, so we don't try to mirror one. Pass
 ``prediction_length=N`` explicitly to override.
 """
 
+import warnings
+
 import numpy as np
 import pandas as pd
 from benchopt import BaseDataset
@@ -92,14 +94,57 @@ FEV_DATASETS: tuple[str, ...] = (
 def _infer_freq(timestamps) -> str:
     """Best-effort freq inference from a series' timestamp column.
 
-    Falls back to ``"D"`` when pandas cannot infer. Uses the first 5
-    points to keep the check cheap on long series.
+    Tries ``pd.infer_freq`` on the first points, then the most common
+    consecutive delta (robust to isolated gaps). Warns and falls back to
+    ``"D"`` when nothing can be inferred.
     """
     try:
-        idx = pd.DatetimeIndex(timestamps[:5])
-        return pd.infer_freq(idx) or "D"
+        idx = pd.DatetimeIndex(timestamps[:20])
+        freq = pd.infer_freq(idx[:5]) if len(idx) >= 3 else None
+        if freq:
+            return freq
+        deltas = pd.Series(idx).diff().dropna()
+        if len(deltas):
+            step = deltas.mode().iloc[0]
+            return pd.tseries.frequencies.to_offset(step).freqstr
     except Exception:
-        return "D"
+        pass
+    warnings.warn(
+        "Could not infer the sampling frequency from timestamps; "
+        "defaulting to daily ('D')."
+    )
+    return "D"
+
+
+def _is_numeric_array_col(df, c) -> bool:
+    """True if column ``c`` holds non-empty numeric array-likes.
+
+    Decided from the first informative entry among the first 5 rows, so
+    a null or empty first row does not drop a valid channel.
+    """
+    for v in df[c].head(5):
+        if v is None or isinstance(v, (str, bytes)) or not hasattr(v, "__len__"):
+            continue
+        if len(v) == 0:
+            continue
+        return isinstance(v[0], (int, float, np.integer, np.floating))
+    return False
+
+
+def _select_channel_cols(df) -> "list[str]":
+    """Columns to stack as forecast channels.
+
+    An explicit ``target`` column is the sole target — other numeric
+    array columns are exogenous covariates (e.g. the epf_* load
+    forecasts), out of scope for the MVP. Without ``target`` (e.g. ETT),
+    every numeric array column is a channel.
+    """
+    if "target" in df.columns:
+        return ["target"]
+    return [
+        c for c in df.columns
+        if c not in _METADATA_COLS and _is_numeric_array_col(df, c)
+    ]
 
 
 class Dataset(BaseDataset):
@@ -190,23 +235,7 @@ class Dataset(BaseDataset):
         if df.empty:
             raise ValueError(f"{self.dataset_name!r} contained 0 series.")
 
-        # Channel cols = non-metadata columns whose entries are numeric
-        # array-likes. Some FEV datasets carry extra scalar/string fields
-        # (``type``, ``Security``) or arrays of strings (holiday names in
-        # ``favorita_stores``, etc.). We treat covariates as out of scope
-        # for the MVP.
-        def _is_numeric_array_col(c):
-            v = df.iloc[0][c]
-            if not hasattr(v, "__len__") or isinstance(v, (str, bytes)):
-                return False
-            if len(v) == 0:
-                return False
-            return isinstance(v[0], (int, float, np.integer, np.floating))
-
-        channel_cols = [
-            c for c in df.columns
-            if c not in _METADATA_COLS and _is_numeric_array_col(c)
-        ]
+        channel_cols = _select_channel_cols(df)
         if not channel_cols:
             raise ValueError(
                 f"{self.dataset_name!r} has no channel columns "
