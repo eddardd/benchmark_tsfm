@@ -34,6 +34,7 @@ import pandas as pd
 from benchopt import BaseDataset
 
 from benchmark_utils.covariates import Covariates
+from benchmark_utils.download_hf import snapshot_hf_files
 from benchmark_utils.constants import from_pandas
 from benchmark_utils.windowing import build_forecasting_data
 
@@ -201,31 +202,10 @@ class Dataset(BaseDataset):
 
     def _snapshot(self) -> "list[str]":
         """Snapshot-download parquet files for this dataset_name and
-        return their local paths. Tries the local HF cache first so
-        cached runs skip the Hub round-trip and work offline."""
-        from huggingface_hub import snapshot_download
-        from pathlib import Path
-
-        kwargs = dict(
-            repo_type="dataset",
-            allow_patterns=f"{self.dataset_name}/*.parquet",
+        return their local paths (cache-first, see ``snapshot_hf_files``)."""
+        return snapshot_hf_files(
+            "autogluon/fev_datasets", self.dataset_name, "*.parquet"
         )
-
-        def _files(root):
-            return sorted(
-                str(p)
-                for p in (Path(root) / self.dataset_name).glob("*.parquet")
-            )
-
-        try:
-            files = _files(snapshot_download(
-                "autogluon/fev_datasets", local_files_only=True, **kwargs
-            ))
-            if files:
-                return files
-        except FileNotFoundError:
-            pass  # nothing cached yet
-        return _files(snapshot_download("autogluon/fev_datasets", **kwargs))
 
     def get_data(self):
         parquet_files = self._snapshot()

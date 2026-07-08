@@ -82,6 +82,7 @@ import numpy as np
 from benchopt import BaseDataset
 
 from benchmark_utils.covariates import Covariates
+from benchmark_utils.download_hf import snapshot_hf_files
 from benchmark_utils.constants import (
     from_pandas,
     gift_eval_prediction_length,
@@ -275,34 +276,17 @@ class Dataset(BaseDataset):
 
     def _snapshot(self) -> "list[str]":
         """Snapshot-download the arrow files for this dataset and return
-        their local paths. Tries the local HF cache first so cached runs
-        skip the Hub round-trip and work offline."""
-        from huggingface_hub import snapshot_download
-        from pathlib import Path
+        their local paths (cache-first, see ``snapshot_hf_files``).
 
-        # data-*.arrow only: the hub repo also holds stray HF map-cache
-        # shards (cache-*.arrow, e.g. under electricity/15T) with
-        # duplicated rows that must not be loaded.
-        hf_path = _hf_arrow_directory(self.dataset_name)
-        kwargs = dict(
-            repo_type="dataset",
-            allow_patterns=f"{hf_path}/data-*.arrow",
+        data-*.arrow only: the hub repo also holds stray HF map-cache
+        shards (cache-*.arrow, e.g. under electricity/15T) with
+        duplicated rows that must not be loaded.
+        """
+        return snapshot_hf_files(
+            "Salesforce/GiftEval",
+            _hf_arrow_directory(self.dataset_name),
+            "data-*.arrow",
         )
-
-        def _files(root):
-            return sorted(
-                str(p) for p in (Path(root) / hf_path).glob("data-*.arrow")
-            )
-
-        try:
-            files = _files(snapshot_download(
-                "Salesforce/GiftEval", local_files_only=True, **kwargs
-            ))
-            if files:
-                return files
-        except FileNotFoundError:
-            pass  # nothing cached yet
-        return _files(snapshot_download("Salesforce/GiftEval", **kwargs))
 
     def get_data(self):
         from datasets import Dataset as HFDataset, concatenate_datasets
