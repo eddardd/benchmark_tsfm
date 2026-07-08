@@ -2,7 +2,7 @@
 
 import pytest
 
-from benchmark_utils.constants import (
+from benchmark_utils.forecasting_constants import (
     from_aeon,
     from_pandas,
     gift_eval_prediction_length,

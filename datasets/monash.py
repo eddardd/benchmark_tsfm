@@ -36,7 +36,7 @@ from aeon.datasets import load_forecasting
 from benchopt import BaseDataset
 
 from benchmark_utils.covariates import Covariates
-from benchmark_utils.constants import from_aeon
+from benchmark_utils.forecasting_constants import FORECASTING_METRICS, from_aeon
 from benchmark_utils.windowing import build_forecasting_data
 
 
@@ -112,18 +112,7 @@ class Dataset(BaseDataset):
             ),
             covariates=Covariates(),
             task="forecasting",
-            metrics=[
-                "mae",
-                "mse",
-                "rmse",
-                "mase",
-                "smape",
-                "crps",
-                "wql",
-                "mcis",
-                "pinball",
-                "skill_score_ratio",
-            ],
+            metrics=list(FORECASTING_METRICS),
             prediction_length=pred_len,
             freq=freq,
             seasonality=seasonality,

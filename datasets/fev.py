@@ -22,7 +22,7 @@ Each parquet row is one series; columns vary:
 
 Rolling-window splits match :mod:`datasets.monash`. The default
 ``prediction_length`` is the freq-based heuristic from
-:func:`benchmark_utils.constants.from_pandas`; FEV does not publish a
+:func:`benchmark_utils.forecasting_constants.from_pandas`; FEV does not publish a
 per-dataset horizon spec, so we don't try to mirror one. Pass
 ``prediction_length=N`` explicitly to override.
 """
@@ -35,7 +35,7 @@ from benchopt import BaseDataset
 
 from benchmark_utils.covariates import Covariates
 from benchmark_utils.download_hf import snapshot_hf_files
-from benchmark_utils.constants import from_pandas
+from benchmark_utils.forecasting_constants import FORECASTING_METRICS, from_pandas
 from benchmark_utils.windowing import build_forecasting_data
 
 
@@ -160,7 +160,7 @@ class Dataset(BaseDataset):
         for the full list (also discoverable via ``benchopt info -v``).
     prediction_length : int or None
         Explicit override. ``None`` → resolved from the inferred freq
-        via :func:`benchmark_utils.constants.from_pandas` (same heuristic
+        via :func:`benchmark_utils.forecasting_constants.from_pandas` (same heuristic
         used by Monash). FEV does not publish its own per-dataset
         horizon matrix, so we don't try to align with a leaderboard
         spec here.
@@ -267,7 +267,7 @@ class Dataset(BaseDataset):
             ),
             covariates=Covariates(),
             task="forecasting",
-            metrics=["mae", "mse", "mase", "smape"],
+            metrics=list(FORECASTING_METRICS),
             prediction_length=pred_len,
             freq=canonical_freq,
             seasonality=seasonality,

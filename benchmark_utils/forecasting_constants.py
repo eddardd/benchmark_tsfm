@@ -1,4 +1,4 @@
-"""Shared frequency / seasonality tables for forecasting datasets.
+"""Shared forecasting constants: frequency / seasonality tables and metrics.
 
 Two sources name frequencies differently:
   - aeon (used by Monash) uses words: "yearly", "weekly", "minutely", ...
@@ -10,6 +10,13 @@ adapters that normalize each source onto that canonical key.
 """
 
 import re
+
+# Metrics reported by every forecasting dataset (names from
+# benchmark_utils.metrics.ALL_METRICS).
+FORECASTING_METRICS = (
+    "mae", "mse", "rmse", "mase", "smape",
+    "crps", "wql", "mcis", "pinball", "skill_score_ratio",
+)
 
 # Canonical base alias → (display_freq, MASE seasonality, default forecast horizon)
 _BASE = {

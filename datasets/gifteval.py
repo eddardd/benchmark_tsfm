@@ -73,7 +73,7 @@ rolling-window logic as Monash via
 :func:`benchmark_utils.windowing.make_forecasting_splits`. The
 ``prediction_length`` for a given (freq, term) follows GIFT-Eval's
 canonical ``base × multiplier`` rule via
-:func:`benchmark_utils.constants.gift_eval_prediction_length`.
+:func:`benchmark_utils.forecasting_constants.gift_eval_prediction_length`.
 
 Data contract output mirrors :mod:`datasets.monash`.
 """
@@ -83,7 +83,8 @@ from benchopt import BaseDataset
 
 from benchmark_utils.covariates import Covariates
 from benchmark_utils.download_hf import snapshot_hf_files
-from benchmark_utils.constants import (
+from benchmark_utils.forecasting_constants import (
+    FORECASTING_METRICS,
     from_pandas,
     gift_eval_prediction_length,
 )
@@ -234,7 +235,7 @@ class Dataset(BaseDataset):
         paths that define ``long``.
     prediction_length : int or None
         Explicit override. ``None`` → resolved from (freq, term) via
-        :func:`benchmark_utils.constants.gift_eval_prediction_length`.
+        :func:`benchmark_utils.forecasting_constants.gift_eval_prediction_length`.
     n_windows : int
         Number of rolling evaluation windows per series.
     max_series : int or None
@@ -355,7 +356,7 @@ class Dataset(BaseDataset):
             ),
             covariates=Covariates(),  # GIFT-Eval HF schema has no covariates
             task="forecasting",
-            metrics=["mae", "mse", "mase", "smape"],
+            metrics=list(FORECASTING_METRICS),
             prediction_length=pred_len,
             freq=freq,
             seasonality=seasonality,
