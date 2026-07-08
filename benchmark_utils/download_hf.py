@@ -17,7 +17,8 @@ def snapshot_hf_files(repo_id: str, subdir: str, pattern: str) -> "list[str]":
     try:
         root = snapshot_download(repo_id, local_files_only=True, **kwargs)
         if not any((Path(root) / subdir).glob(pattern)):
-            root = snapshot_download(repo_id, **kwargs)
+            # Cached snapshot lacks these files — handled below.
+            raise FileNotFoundError
     except FileNotFoundError:
         root = snapshot_download(repo_id, **kwargs)
     return sorted(str(p) for p in (Path(root) / subdir).glob(pattern))
