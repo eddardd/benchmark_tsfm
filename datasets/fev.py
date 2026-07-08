@@ -174,7 +174,7 @@ class Dataset(BaseDataset):
 
     name = "FEV"
 
-    requirements = ["pip::pyarrow", "pip::huggingface-hub"]
+    requirements = ["pip::huggingface-hub"]
 
     parameters = {
         "dataset_name": ["LOOP_SEATTLE/1H"],
