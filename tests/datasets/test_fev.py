@@ -1,19 +1,18 @@
 """Tests for the FEV dataset helpers (freq inference, channel selection)."""
 
-import importlib.util
-import pathlib
+import inspect
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+from benchopt.benchmark import Benchmark
 
-# Load by path: ``import datasets.fev`` would clash with the HF datasets lib.
-_spec = importlib.util.spec_from_file_location(
-    "fev_module",
-    pathlib.Path(__file__).parents[2] / "datasets" / "fev.py",
+BENCHMARK_DIR = Path(__file__).parents[2]
+Dataset, = Benchmark(BENCHMARK_DIR).check_dataset_patterns(
+    ["FEV"], class_only=True
 )
-fev = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(fev)
+fev = inspect.getmodule(Dataset)
 
 
 class TestInferFreq:

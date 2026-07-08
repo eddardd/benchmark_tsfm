@@ -1,15 +1,15 @@
 """Tests for the GIFT-Eval leaderboard-combos loading (offline)."""
 
-import importlib.util
-import pathlib
+import inspect
+from pathlib import Path
 
-# Load by path: ``import datasets.gifteval`` would clash with the HF lib.
-_spec = importlib.util.spec_from_file_location(
-    "gifteval_module",
-    pathlib.Path(__file__).parents[2] / "datasets" / "gifteval.py",
+from benchopt.benchmark import Benchmark
+
+BENCHMARK_DIR = Path(__file__).parents[2]
+Dataset, = Benchmark(BENCHMARK_DIR).check_dataset_patterns(
+    ["GiftEval"], class_only=True
 )
-gifteval = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(gifteval)
+gifteval = inspect.getmodule(Dataset)
 
 
 def test_parse_leaderboard_csv(tmp_path):
@@ -32,8 +32,7 @@ def test_non_canonical_combo_skips(monkeypatch):
     monkeypatch.setattr(
         gifteval, "_leaderboard_cache", {"m4_weekly/W": ("short",)}
     )
-    ds = gifteval.Dataset.__new__(gifteval.Dataset)
-    ds.dataset_name, ds.term = "m4_weekly/W", "long"
+    ds = Dataset.get_instance(dataset_name="m4_weekly/W", term="long")
     data = ds.get_data()
     assert set(data) == {"_skip_reason"}
     assert "does not define term 'long'" in data["_skip_reason"]
