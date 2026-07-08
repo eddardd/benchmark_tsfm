@@ -105,9 +105,6 @@ class Objective(BaseObjective):
         self.covariates = covariates if covariates is not None else Covariates()
         self.task = task
         self.metrics = metrics
-        # Pull any skip marker out of meta so it doesn't leak into
-        # ``get_objective()`` payloads.
-        self._skip_reason = meta.pop("_skip_reason", None)
         self.meta = meta  # freq, prediction_length, n_classes, …
 
     def skip(self, **data):
@@ -115,9 +112,9 @@ class Objective(BaseObjective):
 
         Datasets that want to filter their own parameter grid (e.g.
         :mod:`datasets.gifteval` skipping non-leaderboard (path, term)
-        combos) return ``_skip_reason="..."`` from ``get_data()`` and we
-        propagate it here so benchopt records a clean skip rather than
-        running an empty objective.
+        combos) return ``dict(_skip_reason="...")`` from ``get_data()``.
+        benchopt calls this hook *before* ``set_data`` and returns early
+        on skip, so no other data field is needed or consumed.
         """
         reason = data.get("_skip_reason")
         if reason:

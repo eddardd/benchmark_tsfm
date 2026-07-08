@@ -212,22 +212,9 @@ def _hf_arrow_directory(leaderboard_path: str) -> str:
 
 
 def _skip_placeholder(reason: str) -> dict:
-    """Return a minimal data dict that satisfies ``Objective.set_data``
-    but flags the combo for skipping via ``Objective.skip``."""
-    return dict(
-        X_train=[],
-        y_train=[],
-        X_test=[],
-        y_test=[],
-        cutoff_indexes=[],
-        covariates=Covariates(),
-        task="forecasting",
-        metrics=[],
-        prediction_length=1,
-        freq="D",
-        seasonality=1,
-        _skip_reason=reason,
-    )
+    """Flag the combo for skipping via ``Objective.skip``, which benchopt
+    calls before ``set_data`` — no other data field is needed."""
+    return dict(_skip_reason=reason)
 
 
 class Dataset(BaseDataset):
@@ -292,13 +279,18 @@ class Dataset(BaseDataset):
         from huggingface_hub import snapshot_download
         from pathlib import Path
 
+        # data-*.arrow only: the hub repo also holds stray HF map-cache
+        # shards (cache-*.arrow, e.g. under electricity/15T) with
+        # duplicated rows that must not be loaded.
         hf_path = _hf_arrow_directory(self.dataset_name)
         local_root = snapshot_download(
             "Salesforce/GiftEval",
             repo_type="dataset",
-            allow_patterns=f"{hf_path}/*.arrow",
+            allow_patterns=f"{hf_path}/data-*.arrow",
         )
-        return sorted(str(p) for p in (Path(local_root) / hf_path).glob("*.arrow"))
+        return sorted(
+            str(p) for p in (Path(local_root) / hf_path).glob("data-*.arrow")
+        )
 
     def get_data(self):
         from datasets import Dataset as HFDataset
