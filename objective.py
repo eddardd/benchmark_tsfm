@@ -18,7 +18,9 @@ All datasets must return (via ``get_data``):
 
 Task-specific shapes
 --------------------
-forecasting        X_test         List[(T_i, C)]  full series — adapter uses
+forecasting        y_train        None — solvers carve fine-tuning
+                                  windows out of X_train themselves
+                   X_test         List[(T_i, C)]  full series — adapter uses
                                                   ``x[:cutoff]`` as history
                    cutoff_indexes List[List[int]] jagged per-series cutoffs
                    y_test         List[(n_cutoffs, H, C)]

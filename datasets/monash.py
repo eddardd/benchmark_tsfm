@@ -37,7 +37,7 @@ from benchopt import BaseDataset
 
 from benchmark_utils.covariates import Covariates
 from benchmark_utils.constants import from_aeon
-from benchmark_utils.windowing import make_forecasting_splits
+from benchmark_utils.windowing import build_forecasting_data
 
 
 class Dataset(BaseDataset):
@@ -103,33 +103,13 @@ class Dataset(BaseDataset):
         if not series_list:
             raise ValueError(f"No series found for dataset {self.dataset_name!r}.")
 
-        # Training portion: everything except the last test windows
-        test_len = pred_len * self.n_windows
-        X_train, y_train_list, full_series = [], [], []
-        for ts in series_list:
-            if ts.shape[0] < pred_len + 1:
-                continue
-            train_end = max(1, ts.shape[0] - test_len)
-            X_train.append(ts[:train_end])
-            y_train_list.append(ts[train_end : train_end + pred_len])
-            full_series.append(ts)
-
-        if not full_series:
-            raise ValueError("All series are shorter than prediction_length.")
-
-        n_windows = 1 if self.debug else self.n_windows
-        X_test, cutoff_indexes, y_test = make_forecasting_splits(
-            full_series,
-            prediction_length=pred_len,
-            n_windows=n_windows,
-        )
-
         return dict(
-            X_train=X_train,
-            y_train=y_train_list,
-            X_test=X_test,
-            y_test=y_test,
-            cutoff_indexes=cutoff_indexes,
+            **build_forecasting_data(
+                series_list,
+                prediction_length=pred_len,
+                n_windows=self.n_windows,
+                debug=self.debug,
+            ),
             covariates=Covariates(),
             task="forecasting",
             metrics=[
