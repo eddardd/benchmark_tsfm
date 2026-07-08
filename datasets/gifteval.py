@@ -275,7 +275,8 @@ class Dataset(BaseDataset):
 
     def _snapshot(self) -> "list[str]":
         """Snapshot-download the arrow files for this dataset and return
-        their local paths. Idempotent — HF caches by content hash."""
+        their local paths. Tries the local HF cache first so cached runs
+        skip the Hub round-trip and work offline."""
         from huggingface_hub import snapshot_download
         from pathlib import Path
 
@@ -283,17 +284,28 @@ class Dataset(BaseDataset):
         # shards (cache-*.arrow, e.g. under electricity/15T) with
         # duplicated rows that must not be loaded.
         hf_path = _hf_arrow_directory(self.dataset_name)
-        local_root = snapshot_download(
-            "Salesforce/GiftEval",
+        kwargs = dict(
             repo_type="dataset",
             allow_patterns=f"{hf_path}/data-*.arrow",
         )
-        return sorted(
-            str(p) for p in (Path(local_root) / hf_path).glob("data-*.arrow")
-        )
+
+        def _files(root):
+            return sorted(
+                str(p) for p in (Path(root) / hf_path).glob("data-*.arrow")
+            )
+
+        try:
+            files = _files(snapshot_download(
+                "Salesforce/GiftEval", local_files_only=True, **kwargs
+            ))
+            if files:
+                return files
+        except FileNotFoundError:
+            pass  # nothing cached yet
+        return _files(snapshot_download("Salesforce/GiftEval", **kwargs))
 
     def get_data(self):
-        from datasets import Dataset as HFDataset
+        from datasets import Dataset as HFDataset, concatenate_datasets
 
         # Short-circuit non-canonical combos so heavy parsing doesn't run.
         if (self.dataset_name, self.term) not in CANONICAL_COMBOS:
@@ -309,23 +321,22 @@ class Dataset(BaseDataset):
                 f"{self.dataset_name!r}. Valid choices are in GIFTEVAL_DATASETS."
             )
 
-        rows = []
-        for f in arrow_files:
-            rows.extend(HFDataset.from_file(f))
+        parts = [HFDataset.from_file(f) for f in arrow_files]
+        ds = parts[0] if len(parts) == 1 else concatenate_datasets(parts)
 
-        if self.debug:
-            rows = rows[:5]
-        elif self.max_series is not None:
-            rows = rows[: int(self.max_series)]
+        # Slice on the Arrow table (zero-copy) before decoding anything.
+        n_keep = 5 if self.debug else self.max_series
+        if n_keep is not None:
+            ds = ds.select(range(min(int(n_keep), len(ds))))
 
-        if not rows:
+        if len(ds) == 0:
             raise ValueError(
                 f"GIFT-Eval dataset {self.dataset_name!r} returned 0 series."
             )
 
         # Frequency / seasonality — every series in a GIFT-Eval subset
         # shares the same freq, so taking it from the first entry is safe.
-        pandas_freq = rows[0].get("freq") or "D"
+        pandas_freq = ds[0].get("freq") or "D"
         freq, seasonality, _ = from_pandas(pandas_freq)
 
         pred_len = self.prediction_length
@@ -334,12 +345,12 @@ class Dataset(BaseDataset):
                 pandas_freq, self.term, dataset_name=self.dataset_name
             )
 
-        # Build (T, C) series. Univariate entries arrive as flat
-        # ``List[float]`` (ndim=1); multivariate as ``List[List[float]]``
-        # of shape ``(C, T)``.
+        # Build (T, C) series with columnar numpy access — avoids
+        # round-tripping every float through python objects. Univariate
+        # entries arrive as flat arrays (ndim=1); multivariate as (C, T).
         series_list = []
-        for r in rows:
-            values = np.asarray(r["target"], dtype=np.float32)
+        for values in ds.with_format("numpy")["target"]:
+            values = np.asarray(values, dtype=np.float32)
             if values.ndim == 1:
                 series_list.append(values.reshape(-1, 1))         # (T, 1)
             elif values.ndim == 2:
