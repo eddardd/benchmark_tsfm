@@ -6,8 +6,8 @@ The class exposes two orthogonal parameters that drive the leaderboard
 matrix:
 
 * ``dataset_name`` — one of 55 canonical ``<name>/<freq>`` paths (e.g.
-  ``"m4_weekly/W"``, ``"loop_seattle/H"``). The full list is
-  :data:`GIFTEVAL_DATASETS`.
+  ``"m4_weekly/W"``, ``"loop_seattle/H"``). The full list is derived
+  from the leaderboard CSV and discoverable via ``benchopt info -v``.
 * ``term`` — one of ``short`` / ``medium`` / ``long``, controlling the
   forecast horizon (×1, ×10, ×15 of the per-freq base).
 
@@ -19,8 +19,11 @@ Canonical-combo gating
 ----------------------
 GIFT-Eval scores only **97** of the 55 × 3 = 165 possible ``(path,
 term)`` combinations on its public leaderboard. The 34 short-only paths
-do not define ``medium`` / ``long``. We track the canonical set in
-:data:`CANONICAL_COMBOS` and gate runs at the dataset level: when
+do not define ``medium`` / ``long``. The canonical set is derived
+from the leaderboard's results CSV (fetched from the HF Space
+``Salesforce/GIFT-Eval`` by ``prepare`` or on first use, and stored as a
+small CSV under benchopt's data path) and gates runs at the dataset
+level: when
 ``(dataset_name, term)`` is not canonical, ``get_data()`` short-circuits
 and returns a placeholder dict carrying a ``_skip_reason`` field.
 :meth:`Objective.skip` (see ``objective.py``) honors that field and
@@ -78,8 +81,11 @@ canonical ``base × multiplier`` rule via
 Data contract output mirrors :mod:`datasets.monash`.
 """
 
+import csv
+from pathlib import Path
+
 import numpy as np
-from benchopt import BaseDataset
+from benchopt import BaseDataset, config
 
 from benchmark_utils.covariates import Covariates
 from benchmark_utils.download_hf import snapshot_hf_files
@@ -92,76 +98,56 @@ from benchmark_utils.windowing import build_forecasting_data
 
 
 # ---------------------------------------------------------------------------
-# Single source of truth: leaderboard ``<name>/<freq>`` path → tuple of
-# terms that path defines. Derived from
-# gift-eval/results/*/all_results.csv. 55 paths, 97 (path, term) triples;
-# 34 paths are short-only, 21 define all three.
+# Canonical (dataset_name, term) table — derived from the GIFT-Eval
+# leaderboard Space (results/seasonal_naive/all_results.csv: 55 paths,
+# 97 combos, 34 short-only). Fetched once, stored as a small CSV under
+# benchopt's data path by ``prepare`` (or on first use, e.g. when
+# expanding ``dataset_name=all``).
 # ---------------------------------------------------------------------------
-_LEADERBOARD: dict[str, tuple[str, ...]] = {
-    "bitbrains_fast_storage/5T":   ("short", "medium", "long"),
-    "bitbrains_fast_storage/H":    ("short",),
-    "bitbrains_rnd/5T":            ("short", "medium", "long"),
-    "bitbrains_rnd/H":             ("short",),
-    "bizitobs_application/10S":    ("short", "medium", "long"),
-    "bizitobs_l2c/5T":             ("short", "medium", "long"),
-    "bizitobs_l2c/H":              ("short", "medium", "long"),
-    "bizitobs_service/10S":        ("short", "medium", "long"),
-    "car_parts/M":                 ("short",),
-    "covid_deaths/D":              ("short",),
-    "electricity/15T":             ("short", "medium", "long"),
-    "electricity/D":               ("short",),
-    "electricity/H":               ("short", "medium", "long"),
-    "electricity/W":               ("short",),
-    "ett1/15T":                    ("short", "medium", "long"),
-    "ett1/D":                      ("short",),
-    "ett1/H":                      ("short", "medium", "long"),
-    "ett1/W":                      ("short",),
-    "ett2/15T":                    ("short", "medium", "long"),
-    "ett2/D":                      ("short",),
-    "ett2/H":                      ("short", "medium", "long"),
-    "ett2/W":                      ("short",),
-    "hierarchical_sales/D":        ("short",),
-    "hierarchical_sales/W":        ("short",),
-    "hospital/M":                  ("short",),
-    "jena_weather/10T":            ("short", "medium", "long"),
-    "jena_weather/D":              ("short",),
-    "jena_weather/H":              ("short", "medium", "long"),
-    "kdd_cup_2018/D":              ("short",),
-    "kdd_cup_2018/H":              ("short", "medium", "long"),
-    "loop_seattle/5T":             ("short", "medium", "long"),
-    "loop_seattle/D":              ("short",),
-    "loop_seattle/H":              ("short", "medium", "long"),
-    "m4_daily/D":                  ("short",),
-    "m4_hourly/H":                 ("short",),
-    "m4_monthly/M":                ("short",),
-    "m4_quarterly/Q":              ("short",),
-    "m4_weekly/W":                 ("short",),
-    "m4_yearly/A":                 ("short",),
-    "m_dense/D":                   ("short",),
-    "m_dense/H":                   ("short", "medium", "long"),
-    "restaurant/D":                ("short",),
-    "saugeen/D":                   ("short",),
-    "saugeen/M":                   ("short",),
-    "saugeen/W":                   ("short",),
-    "solar/10T":                   ("short", "medium", "long"),
-    "solar/D":                     ("short",),
-    "solar/H":                     ("short", "medium", "long"),
-    "solar/W":                     ("short",),
-    "sz_taxi/15T":                 ("short", "medium", "long"),
-    "sz_taxi/H":                   ("short",),
-    "temperature_rain/D":          ("short",),
-    "us_births/D":                 ("short",),
-    "us_births/M":                 ("short",),
-    "us_births/W":                 ("short",),
-}
+_LEADERBOARD_REPO = "Salesforce/GIFT-Eval"
+_LEADERBOARD_FILE = "results/seasonal_naive/all_results.csv"
+_leaderboard_cache: "dict[str, tuple[str, ...]] | None" = None
 
-
-# Public derived constants — what users and CLI tooling reference.
-GIFTEVAL_DATASETS: tuple[str, ...] = tuple(sorted(_LEADERBOARD))
 GIFTEVAL_TERMS: tuple[str, ...] = ("short", "medium", "long")
-CANONICAL_COMBOS: frozenset[tuple[str, str]] = frozenset(
-    (path, term) for path, terms in _LEADERBOARD.items() for term in terms
-)
+
+
+def _leaderboard_csv_path() -> Path:
+    return Path(config.get_data_path(key="gifteval")) / "leaderboard_combos.csv"
+
+
+def _build_leaderboard_csv(path: Path):
+    """Fetch the leaderboard results CSV and store the (dataset_name, term)
+    combos it scores."""
+    from huggingface_hub import hf_hub_download
+
+    src = hf_hub_download(_LEADERBOARD_REPO, _LEADERBOARD_FILE, repo_type="space")
+    with open(src) as f:
+        # "dataset" column is "<name>/<freq>/<term>".
+        combos = [row["dataset"].rsplit("/", 1) for row in csv.DictReader(f)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["dataset_name", "term"])
+        writer.writerows(combos)
+
+
+def _parse_leaderboard_csv(path: Path) -> "dict[str, tuple[str, ...]]":
+    table: dict = {}
+    with open(path) as f:
+        for row in csv.DictReader(f):
+            table.setdefault(row["dataset_name"], []).append(row["term"])
+    return {name: tuple(terms) for name, terms in table.items()}
+
+
+def _leaderboard() -> "dict[str, tuple[str, ...]]":
+    """dataset_name → terms it defines on the leaderboard (disk-cached)."""
+    global _leaderboard_cache
+    if _leaderboard_cache is None:
+        csv_path = _leaderboard_csv_path()
+        if not csv_path.exists():
+            _build_leaderboard_csv(csv_path)
+        _leaderboard_cache = _parse_leaderboard_csv(csv_path)
+    return _leaderboard_cache
 
 
 # ---------------------------------------------------------------------------
@@ -227,10 +213,10 @@ class Dataset(BaseDataset):
     dataset_name : str
         One of 55 canonical leaderboard paths — ``<name>/<freq>``, e.g.
         ``"m4_weekly/W"``, ``"loop_seattle/H"``. See
-        :data:`GIFTEVAL_DATASETS`.
+        ``benchopt info -v``.
     term : str
-        ``"short"`` / ``"medium"`` / ``"long"``. Combos not in
-        :data:`CANONICAL_COMBOS` are skipped (placeholder + objective
+        ``"short"`` / ``"medium"`` / ``"long"``. Combos not on the
+        leaderboard are skipped (placeholder + objective
         ``skip``), so ``dataset_name=all, term=long`` runs only the 21
         paths that define ``long``.
     prediction_length : int or None
@@ -266,13 +252,15 @@ class Dataset(BaseDataset):
     @classmethod
     def get_all_parameter_values(cls, name):
         if name == "dataset_name":
-            return list(GIFTEVAL_DATASETS)
+            return sorted(_leaderboard())
         if name == "term":
             return list(GIFTEVAL_TERMS)
         return None
 
     def prepare(self):
-        """Pre-download arrow shards for this config into HF's cache."""
+        """Build the leaderboard-combos CSV and pre-download the arrow
+        shards for this config into HF's cache."""
+        _leaderboard()
         self._snapshot()
 
     def _snapshot(self) -> "list[str]":
@@ -290,20 +278,20 @@ class Dataset(BaseDataset):
         )
 
     def get_data(self):
-        from datasets import Dataset as HFDataset, concatenate_datasets
-
         # Short-circuit non-canonical combos so heavy parsing doesn't run.
-        if (self.dataset_name, self.term) not in CANONICAL_COMBOS:
+        if self.term not in _leaderboard().get(self.dataset_name, ()):
             return _skip_placeholder(
                 f"non-canonical GIFT-Eval combo: {self.dataset_name!r} does "
                 f"not define term {self.term!r} on the leaderboard"
             )
 
+        from datasets import Dataset as HFDataset, concatenate_datasets
+
         arrow_files = self._snapshot()
         if not arrow_files:
             raise ValueError(
                 f"No Arrow file found for GIFT-Eval dataset "
-                f"{self.dataset_name!r}. Valid choices are in GIFTEVAL_DATASETS."
+                f"{self.dataset_name!r}. See `benchopt info` for valid choices."
             )
 
         parts = [HFDataset.from_file(f) for f in arrow_files]
