@@ -23,28 +23,34 @@ _BASE = {
     "S": ("S",   1, 60),
 }
 
-# aeon's spelled-out names → canonical base alias
-_AEON_TO_BASE = {
-    "yearly":    "Y",
-    "quarterly": "Q",
-    "monthly":   "M",
-    "weekly":    "W",
-    "daily":     "D",
-    "hourly":    "H",
-    "minutely":  "T",
-    "seconds":   "S",
+# aeon's spelled-out names → pandas offset alias. Sub-hourly words map to
+# multiplied aliases so the seasonality accounts for the step size.
+_AEON_TO_ALIAS = {
+    "yearly":      "Y",
+    "quarterly":   "Q",
+    "monthly":     "M",
+    "weekly":      "W",
+    "daily":       "D",
+    "hourly":      "H",
+    "half_hourly": "30T",
+    "minutely":    "T",
+    "10_minutes":  "10T",
+    "seconds":     "S",
+    "4_seconds":   "4S",
 }
 
 
 def from_aeon(freq_word: str) -> tuple[str, int, int]:
-    """Look up (freq, seasonality, default_horizon) from an aeon freq word."""
-    base = _AEON_TO_BASE.get(freq_word, "D")
-    return _BASE[base]
+    """Look up (freq, seasonality, default_horizon) from an aeon freq word.
+
+    Unknown words default to daily.
+    """
+    return from_pandas(_AEON_TO_ALIAS.get(freq_word, "D"))
 
 
-# Pandas offset aliases: strip a leading multiplier and any anchor suffix
-# (e.g. "5T" → "T", "W-SUN" → "W", "QS-OCT" → "Q", "YE" → "Y").
-_PANDAS_ALIAS_RE = re.compile(r"^\d*([A-Za-z]+)")
+# Pandas offset aliases: capture the leading multiplier and the unit,
+# ignoring any anchor suffix (e.g. "5T" → (5, "T"), "W-SUN" → (1, "W")).
+_PANDAS_ALIAS_RE = re.compile(r"^(\d*)([A-Za-z]+)")
 _NORMALIZE_BASE = {
     # Newer pandas spellings → legacy single-letter aliases used in _BASE.
     "YE": "Y", "YS": "Y", "A": "Y", "AS": "Y",
@@ -57,17 +63,23 @@ _NORMALIZE_BASE = {
 def from_pandas(freq_alias: str) -> tuple[str, int, int]:
     """Look up (freq, seasonality, default_horizon) from a pandas freq alias.
 
-    Handles multipliers ("5T") and anchors ("W-SUN", "QS-OCT") by stripping
-    them before lookup. Unknown aliases default to daily.
+    Anchors ("W-SUN", "QS-OCT") are stripped before lookup. A multiplier
+    scales the step size, so the seasonality is divided by it: at "15T"
+    one day is 1440/15 = 96 steps, not 1440. The original alias is
+    returned as freq so calendar-building consumers (``pd.date_range``)
+    keep the true sampling rate. Unknown aliases default to daily.
     """
     if not freq_alias:
         return _BASE["D"]
     m = _PANDAS_ALIAS_RE.match(freq_alias.split("-", 1)[0])
     if not m:
         return _BASE["D"]
-    head = m.group(1)
-    base = _NORMALIZE_BASE.get(head, head[:1].upper())
-    return _BASE.get(base, _BASE["D"])
+    mult = int(m.group(1)) if m.group(1) else 1
+    base = _NORMALIZE_BASE.get(m.group(2), m.group(2)[:1].upper())
+    if base not in _BASE:
+        return _BASE["D"]
+    _, seasonality, default_h = _BASE[base]
+    return freq_alias, max(1, seasonality // max(mult, 1)), default_h
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +103,17 @@ GIFT_EVAL_PRED_LENGTH_MAP: dict[str, int] = {
     "Y":   4,
 }
 
+# M4-competition horizons differ from the generic table; upstream
+# gift-eval selects this map whenever "m4" is in the dataset name.
+M4_PRED_LENGTH_MAP: dict[str, int] = {
+    "A": 6, "Y": 6,
+    "Q": 8,
+    "M": 18,
+    "W": 13,
+    "D": 14,
+    "H": 48,
+}
+
 GIFT_EVAL_TERM_MULTIPLIER: dict[str, int] = {
     "short":  1,
     "medium": 10,
@@ -98,28 +121,35 @@ GIFT_EVAL_TERM_MULTIPLIER: dict[str, int] = {
 }
 
 
-def gift_eval_prediction_length(freq: str, term: str) -> int:
+def gift_eval_prediction_length(
+    freq: str, term: str, dataset_name: str = ""
+) -> int:
     """Resolve the GIFT-Eval prediction length for a (freq, term) pair.
 
     ``freq`` is a pandas-style alias (e.g. ``"5T"``, ``"1H"``, ``"W-SUN"``).
     Lookup falls back through: exact match → strip leading "1" multiplier
     ("1H" → "H") → collapse any multi-X alias to its base X ("10S" → "S",
     "30T" → "T") → default 48. ``term`` must be one of ``"short"``,
-    ``"medium"``, ``"long"``.
+    ``"medium"``, ``"long"``. When ``dataset_name`` contains "m4", the
+    M4-competition horizons are used, mirroring upstream gift-eval.
     """
     if term not in GIFT_EVAL_TERM_MULTIPLIER:
         raise ValueError(
             f"term must be one of {list(GIFT_EVAL_TERM_MULTIPLIER)}; got {term!r}"
         )
-    base = GIFT_EVAL_PRED_LENGTH_MAP.get(freq)
+    pred_length_map = (
+        M4_PRED_LENGTH_MAP if "m4" in dataset_name
+        else GIFT_EVAL_PRED_LENGTH_MAP
+    )
+    base = pred_length_map.get(freq)
     if base is None:
         m = _PANDAS_ALIAS_RE.match(freq.split("-", 1)[0])
         if m:
-            head = m.group(1)
+            head = m.group(2)
             # Normalize new pandas spellings ("QE"→"Q", "ME"→"M", ...)
             # before falling back through the map.
             head = _NORMALIZE_BASE.get(head, head)
-            base = GIFT_EVAL_PRED_LENGTH_MAP.get(head)
+            base = pred_length_map.get(head)
     if base is None:
         base = 48
     return base * GIFT_EVAL_TERM_MULTIPLIER[term]

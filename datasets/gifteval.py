@@ -338,7 +338,9 @@ class Dataset(BaseDataset):
 
         pred_len = self.prediction_length
         if pred_len is None:
-            pred_len = gift_eval_prediction_length(pandas_freq, self.term)
+            pred_len = gift_eval_prediction_length(
+                pandas_freq, self.term, dataset_name=self.dataset_name
+            )
 
         # Build (T, C) series. Univariate entries arrive as flat
         # ``List[float]`` (ndim=1); multivariate as ``List[List[float]]``
